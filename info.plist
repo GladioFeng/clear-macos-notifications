@@ -182,9 +182,9 @@ on alfred_script(q)
 				set consecutiveMisses to 0
 			else
 				set consecutiveMisses to consecutiveMisses + 1
-				if consecutiveMisses is 5 then exit repeat
+				if consecutiveMisses is 2 then exit repeat
 			end if
-			delay 0.25
+			delay 0.08
 			set refreshedWindow to my waitForNotificationWindow()
 			if refreshedWindow is missing value then
 				if my pressClock() then set refreshedWindow to my waitForNotificationWindow()
@@ -250,7 +250,7 @@ end alfred_script</string>
 	<key>userconfigurationconfig</key>
 	<array/>
 	<key>version</key>
-	<string>1.0.2</string>
+	<string>1.0.3</string>
 	<key>webaddress</key>
 	<string></string>
 </dict>
