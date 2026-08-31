@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>com.gladiofeng.alfred.clear-notifications</string>
+	<key>category</key>
+	<string>Productivity</string>
+	<key>connections</key>
+	<dict>
+		<key>1C70B993-C3C3-44AD-9B11-64EEDB840B7F</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>FA6D662F-A2B5-43A7-B420-D63ED5609398</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>FA6D662F-A2B5-43A7-B420-D63ED5609398</key>
+		<array/>
+	</dict>
+	<key>createdby</key>
+	<string>GladioFeng</string>
+	<key>description</key>
+	<string>清除 macOS 通知中心内当前可访问的全部通知</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>Clear macOS Notifications</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>clear</string>
+				<key>subtext</key>
+				<string>清除通知中心内当前可访问的全部通知</string>
+				<key>text</key>
+				<string>清除所有通知</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>1C70B993-C3C3-44AD-9B11-64EEDB840B7F</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>applescript</key>
+				<string>-- 代码目的：
+-- 从 Alfred 打开 macOS 通知中心，并清除其中可访问的通知。
+--
+-- 代码逻辑：
+-- 1. 通过菜单栏时钟的 AXIdentifier 打开通知中心。
+-- 2. 逐个执行通知卡片的最后一个 Accessibility action，并在每次操作后重新获取 UI。
+-- 3. 成功时安静退出；权限不足或 UI 改版时显示错误对话框。
+--
+-- 必需输入：
+-- - Alfred 已获“辅助功能”权限，并获准控制 System Events。
+--
+-- 预期输出：
+-- - 通知中心被清空；失败时显示原因，不创建新的系统通知。
+
+on showFailure(messageText)
+	try
+		display dialog messageText with title "清除通知失败" buttons {"好"} default button 1 with icon caution
+	end try
+end showFailure
+
+on notificationWindow()
+	tell application "System Events"
+		if exists process "NotificationCenter" then
+			tell process "NotificationCenter"
+				if exists window 1 then
+					set candidateWindow to window 1
+					try
+						if visible of candidateWindow then return candidateWindow
+					on error
+						return candidateWindow
+					end try
+				end if
+			end tell
+		end if
+		if exists process "Notification Center" then
+			tell process "Notification Center"
+				if exists window 1 then return window 1
+			end tell
+		end if
+	end tell
+	return missing value
+end notificationWindow
+
+on waitForNotificationWindow()
+	repeat 20 times
+		set candidateWindow to my notificationWindow()
+		if candidateWindow is not missing value then return candidateWindow
+		delay 0.1
+	end repeat
+	return missing value
+end waitForNotificationWindow
+
+on pressClock()
+	tell application "System Events"
+		tell process "ControlCenter"
+			repeat with menuItemRef in menu bar items of menu bar 1
+				set clockCandidate to contents of menuItemRef
+				try
+					if value of attribute "AXIdentifier" of clockCandidate is "com.apple.menuextra.clock" then
+						perform action "AXPress" of clockCandidate
+						return true
+					end if
+				end try
+			end repeat
+			try
+				perform action "AXPress" of menu bar item 1 of menu bar 1
+				return true
+			end try
+		end tell
+	end tell
+	return false
+end pressClock
+
+on performFirstDismissAction(rootElement)
+	tell application "System Events"
+		try
+			set descendants to entire contents of rootElement
+		on error
+			return false
+		end try
+		repeat with descendantRef in descendants
+			set candidate to contents of descendantRef
+			try
+				set candidateSubrole to value of attribute "AXSubrole" of candidate as text
+				if candidateSubrole contains "AXNotificationCenter" then
+					set candidateActions to actions of candidate
+					if (count of candidateActions) > 0 then
+						perform last item of candidateActions
+						return true
+					end if
+				end if
+			end try
+		end repeat
+	end tell
+	return false
+end performFirstDismissAction
+
+on alfred_script(q)
+	set openedByWorkflow to false
+	try
+		tell application "System Events" to set accessibilityEnabled to UI elements enabled
+		if not accessibilityEnabled then
+			my showFailure("请在“系统设置 → 隐私与安全性 → 辅助功能”中允许 Alfred，然后重试。")
+			return "未清除：缺少辅助功能权限。"
+		end if
+
+		set candidateWindow to my notificationWindow()
+		if candidateWindow is missing value then
+			if not my pressClock() then error "找不到菜单栏时钟。"
+			set openedByWorkflow to true
+			set candidateWindow to my waitForNotificationWindow()
+		end if
+		if candidateWindow is missing value then error "通知中心未能打开。"
+
+		set clearedCount to 0
+		set consecutiveMisses to 0
+		-- ponytail: 500 次上限只用于防止 Accessibility action 假成功造成死循环；确有更多通知时再提高。
+		repeat 500 times
+			if my performFirstDismissAction(candidateWindow) then
+				set clearedCount to clearedCount + 1
+				set consecutiveMisses to 0
+			else
+				set consecutiveMisses to consecutiveMisses + 1
+				if consecutiveMisses is 5 then exit repeat
+			end if
+			delay 0.25
+			set refreshedWindow to my waitForNotificationWindow()
+			if refreshedWindow is missing value then
+				if my pressClock() then set refreshedWindow to my waitForNotificationWindow()
+			end if
+			if refreshedWindow is not missing value then set candidateWindow to refreshedWindow
+		end repeat
+
+		if openedByWorkflow then my pressClock()
+		if clearedCount is 0 then return "通知中心没有可清除的通知。"
+		return "已执行 " &amp; clearedCount &amp; " 次清除操作。"
+	on error errMsg number errNum
+		if openedByWorkflow then
+			try
+				my pressClock()
+			end try
+		end if
+		set failureMessage to "错误 " &amp; errNum &amp; "：" &amp; errMsg &amp; return &amp; return &amp; "请检查 Alfred 的“辅助功能”和“自动化 → System Events”权限。"
+		my showFailure(failureMessage)
+		return "未清除：" &amp; errMsg
+	end try
+end alfred_script</string>
+				<key>cachescript</key>
+				<false/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.applescript</string>
+			<key>uid</key>
+			<string>FA6D662F-A2B5-43A7-B420-D63ED5609398</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string>## 使用
+
+1. 调出 Alfred，输入 `clear`。
+2. 回车；workflow 会清除通知中心内当前可访问的通知，并且不会再生成一条“成功通知”。
+
+## 首次授权
+
+- 在 **系统设置 → 隐私与安全性 → 辅助功能** 中允许 **Alfred 5**。
+- macOS 首次询问时，允许 Alfred 控制 **System Events**。
+- 不需要 Full Disk Access。
+
+该 workflow 只包含 AppleScript 和内嵌图标，没有 Intel/Apple Silicon 专属二进制；通知卡片会从整个窗口递归查找，并执行不依赖系统语言的最后一个 action，以减少 macOS 14/15 UI 差异的影响。它不修改通知数据库或通知设置，但 macOS 后续大版本若改变 Accessibility action，仍可能需要更新。</string>
+	<key>uidata</key>
+	<dict>
+		<key>1C70B993-C3C3-44AD-9B11-64EEDB840B7F</key>
+		<dict>
+			<key>xpos</key>
+			<real>80</real>
+			<key>ypos</key>
+			<real>90</real>
+		</dict>
+		<key>FA6D662F-A2B5-43A7-B420-D63ED5609398</key>
+		<dict>
+			<key>xpos</key>
+			<real>340</real>
+			<key>ypos</key>
+			<real>90</real>
+		</dict>
+	</dict>
+	<key>userconfigurationconfig</key>
+	<array/>
+	<key>version</key>
+	<string>1.0.2</string>
+	<key>webaddress</key>
+	<string></string>
+</dict>
+</plist>
